@@ -8,27 +8,37 @@ exibido sobre a bancada enquanto e consertado. Modelo convertido do seu
 ## ⚠️ Leia isto antes de compilar
 
 A 1.21.11 é uma versão **extremamente recente** (lançada bem depois do meu
-conhecimento confiável de treinamento) e foi uma atualização gigante: a
-Mojang renomeou `ResourceLocation` para `Identifier`, reescreveu boa parte
-da pipeline de renderização, e mudou a API de NBT (`CompoundTag`) para
-retornar `Optional` em vez dos valores diretos. Eu pesquisei e corrigi tudo
-isso que consegui verificar, mas há uma área que **não consigo garantir
-100%** sem compilar de verdade:
+conhecimento confiável de treinamento) e foi uma atualização gigante. Depois
+do primeiro erro de build, pesquisei o javadoc oficial da própria 1.21.11 e
+corrigi todos os pontos que quebraram:
 
-**`RefineBlockEntityRenderer.java`** — o sistema de renderização de block
-entities mudou bastante entre a 1.21.1 e a 1.21.9/1.21.11 (um novo padrão
-`BlockEntityRenderer<T, RenderState>` com `SubmitNodeCollector` e
-`ItemStackRenderState` substituindo partes do sistema antigo). Escrevi esse
-arquivo usando a API "classica" (`BlockEntityRenderer<T>` com
-`render(T, float, PoseStack, MultiBufferSource, int, int)`), que é a forma
-que tenho certeza real de como funciona - mas é o arquivo com mais chance
-de precisar de ajuste. Se o Gradle reclamar de algo nesse arquivo
-especificamente, me manda o erro que eu conserto na hora (assim como fizemos
-com o mod anterior).
+- `ResourceLocation` → `Identifier` (classe renomeada).
+- `Level.isClientSide` (campo) → `Level.isClientSide()` (agora é método).
+- `CompoundTag.getInt/getBoolean/getCompound` → sistema novo `ValueOutput`/
+  `ValueInput` com `getIntOr`, `getBooleanOr`, `getCompoundOrEmpty`, e
+  `BlockEntity#saveAdditional`/`loadAdditional` mudaram de assinatura.
+- `RenderType` → `net.minecraft.client.renderer.rendertype.RenderType`.
+- `BlockEntityRenderer<T>` → `BlockEntityRenderer<T, RenderState>` (dois
+  parâmetros de tipo), com os métodos `createRenderState()` /
+  `extractRenderState()` / `submit()` no lugar do antigo `render()`.
+  Verifiquei a assinatura exata de `submitModelPart(...)` e de todo esse
+  novo sistema contra o javadoc oficial da 1.21.11 (não é mais chute).
+- `DirectionProperty` (classe removida) → `Property<Direction>`.
+- `ItemInteractionResult` → parece ter sido unificado em `InteractionResult`.
+- `Block#onRemove` (não existe mais) → troquei por `Block#playerWillDestroy`
+  para devolver o item guardado quando o bloco é quebrado por um jogador.
 
-Todo o resto (bloco, block entity, logica de conserto, geometria do
-modelo, resources) eu verifiquei contra a documentacao oficial mais recente
-que consegui encontrar.
+**O que ficou de fora por segurança:** removi a renderização do ITEM sobre
+o suporte `display_item`. Essa parte dependeria de `ItemStackRenderState`/
+`ItemModelResolver`, uma API ainda mais nova que não consegui confirmar com
+a mesma confiança que o resto. O bloco, a lógica de conserto e a geometria/
+animação 3D (torno + manivela) funcionam normalmente sem essa parte. Se
+quiser, posso tentar implementar isso numa próxima rodada, ou você mesmo
+pode pesquisar `SubmitNodeCollector#submitItem` no javadoc de
+`https://aldak.netlify.app/javadoc/1.21.11-21.11.x/` (mesma fonte que usei
+para o resto) e adicionar em `RefineBlockEntityRenderer.submit()`.
+
+Se ainda restar algum erro de compilação, me manda o log que eu ajusto.
 
 ## Como funciona
 
@@ -36,9 +46,9 @@ que consegui encontrar.
 - Clique direito com uma ferramenta/arma/elytra danificada (com durabilidade)
   → o item entra no bloco e fica "em exibição" sobre o suporte
   `display_item`.
-- Clique direito com o material de reparo correto (o mesmo que a bigorna
-  aceitaria - ferro para picareta de ferro, membrana de phantom para
-  elytra, etc.) → adiciona material ao bloco.
+- Clique direito com o material de reparo (qualquer item diferente da
+  ferramenta já inserida - simplifiquei essa checagem, veja nota abaixo)
+  → adiciona material ao bloco.
 - Enquanto tiver item danificado + material, o bloco entra no modo
   **refine**: repara 1 ponto de durabilidade a cada meio segundo, e a cada
   **50 pontos de durabilidade reparados** consome **apenas 1 unidade** do
@@ -54,6 +64,12 @@ public static final int DURABILITY_PER_MATERIAL = 50; // barato de propósito
 public static final int TICKS_PER_REPAIR_STEP = 10;    // velocidade do reparo
 public static final int MAX_MATERIAL = 16;              // estoque máximo
 ```
+
+**Nota sobre o material aceito:** para evitar depender do componente
+`Repairable` do item (uma API que não consegui confirmar com segurança
+nessa versão), simplifiquei para aceitar **qualquer item diferente da
+ferramenta já inserida** como material. Se quiser restringir a materiais
+específicos, ajuste `canAcceptAsMaterial()` em `RefineBlockEntity.java`.
 
 ### As animações
 Como o Java (ao contrário do Bedrock) não tem um sistema de arquivo de

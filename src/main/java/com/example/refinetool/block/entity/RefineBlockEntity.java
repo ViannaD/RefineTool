@@ -3,21 +3,33 @@ package com.example.refinetool.block.entity;
 import com.example.refinetool.block.ModBlockEntities;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.Repairable;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Guarda o item a ser consertado e o material de reparo, e faz o conserto
- * gradualmente gastando pouquissimo material comparado a uma bigorna.
+ * Guarda o item a ser consertado (slot 0) e o material de reparo (slot 1), e
+ * faz o conserto gradualmente gastando pouquissimo material comparado a uma
+ * bigorna.
+ *
+ * NOTA: a partir da 1.21.11 a Mojang trocou o sistema de salvar/carregar
+ * BlockEntity de CompoundTag+HolderLookup.Provider para ValueOutput/
+ * ValueInput (uma abstracao nova). Tambem simplifiquei a validacao do
+ * material: em vez de checar o componente "Repairable" do item (API ainda
+ * muito instavel nessa versao), qualquer item diferente da ferramenta ja
+ * inserida serve como material. Se quiser restringir a materiais especificos
+ * (ferro para picareta de ferro, membrana de phantom para elytra etc.),
+ * ajuste canAcceptAsMaterial() abaixo.
  */
 public class RefineBlockEntity extends BlockEntity {
 
@@ -28,8 +40,10 @@ public class RefineBlockEntity extends BlockEntity {
 	/** Quantidade maxima de material que o bloco guarda de uma vez. */
 	public static final int MAX_MATERIAL = 16;
 
-	private ItemStack repairItem = ItemStack.EMPTY;
-	private ItemStack materialItem = ItemStack.EMPTY;
+	private static final int SLOT_REPAIR = 0;
+	private static final int SLOT_MATERIAL = 1;
+
+	private final NonNullList<ItemStack> items = NonNullList.withSize(2, ItemStack.EMPTY);
 	private int durabilitySinceLastMaterial = 0;
 	private boolean refining = false;
 
@@ -40,7 +54,7 @@ public class RefineBlockEntity extends BlockEntity {
 	// ---- usado pelo renderer para desenhar o item e escolher a animacao ----
 
 	public ItemStack getRepairItem() {
-		return this.repairItem;
+		return this.items.get(SLOT_REPAIR);
 	}
 
 	public boolean isRefining() {
@@ -48,47 +62,48 @@ public class RefineBlockEntity extends BlockEntity {
 	}
 
 	public boolean hasRepairItem() {
-		return !this.repairItem.isEmpty();
+		return !getRepairItem().isEmpty();
 	}
 
 	// ---- chamado pelo RefineBlock ao interagir ----
 
 	public boolean canAcceptAsRepairItem(ItemStack stack) {
-		return this.repairItem.isEmpty() && !stack.isEmpty() && stack.isDamageableItem();
+		return getRepairItem().isEmpty() && !stack.isEmpty() && stack.isDamageableItem();
 	}
 
 	public boolean canAcceptAsMaterial(ItemStack stack) {
-		if (this.repairItem.isEmpty() || stack.isEmpty()) {
+		ItemStack repairItem = getRepairItem();
+		ItemStack materialItem = this.items.get(SLOT_MATERIAL);
+		if (repairItem.isEmpty() || stack.isEmpty()) {
 			return false;
 		}
-		if (this.materialItem.getCount() >= MAX_MATERIAL) {
+		if (materialItem.getCount() >= MAX_MATERIAL) {
 			return false;
 		}
-		if (!this.materialItem.isEmpty() && !ItemStack.isSameItemSameComponents(this.materialItem, stack)) {
+		if (!materialItem.isEmpty() && !ItemStack.isSameItemSameComponents(materialItem, stack)) {
 			return false;
 		}
-		Repairable repairable = this.repairItem.get(DataComponents.REPAIRABLE);
-		if (repairable == null) {
-			return false;
-		}
-		return repairable.items().contains(stack.getItem().builtInRegistryHolder());
+		// Simplificacao: qualquer item diferente da propria ferramenta serve
+		// de material (ver nota na documentacao da classe).
+		return !ItemStack.isSameItem(stack, repairItem);
 	}
 
 	/** So chame depois de conferir canAcceptAsRepairItem(stack). Retira 1 unidade da stack recebida. */
 	public void insertRepairItem(ItemStack stack) {
-		this.repairItem = stack.split(1);
+		this.items.set(SLOT_REPAIR, stack.split(1));
 		setChanged();
 		syncToClient();
 	}
 
 	/** So chame depois de conferir canAcceptAsMaterial(stack). */
 	public void insertMaterial(ItemStack stack) {
-		int space = MAX_MATERIAL - this.materialItem.getCount();
+		ItemStack materialItem = this.items.get(SLOT_MATERIAL);
+		int space = MAX_MATERIAL - materialItem.getCount();
 		int moved = Math.min(space, stack.getCount());
-		if (this.materialItem.isEmpty()) {
-			this.materialItem = stack.split(moved);
+		if (materialItem.isEmpty()) {
+			this.items.set(SLOT_MATERIAL, stack.split(moved));
 		} else {
-			this.materialItem.grow(moved);
+			materialItem.grow(moved);
 			stack.shrink(moved);
 		}
 		setChanged();
@@ -97,8 +112,8 @@ public class RefineBlockEntity extends BlockEntity {
 
 	/** Retira o item guardado (consertado ou nao) e devolve para o jogador. */
 	public ItemStack extractRepairItem() {
-		ItemStack result = this.repairItem;
-		this.repairItem = ItemStack.EMPTY;
+		ItemStack result = this.items.get(SLOT_REPAIR);
+		this.items.set(SLOT_REPAIR, ItemStack.EMPTY);
 		this.durabilitySinceLastMaterial = 0;
 		this.refining = false;
 		setChanged();
@@ -108,8 +123,8 @@ public class RefineBlockEntity extends BlockEntity {
 
 	/** Retira o material guardado (usado quando o bloco e quebrado, para nao perder o item). */
 	public ItemStack extractMaterial() {
-		ItemStack result = this.materialItem;
-		this.materialItem = ItemStack.EMPTY;
+		ItemStack result = this.items.get(SLOT_MATERIAL);
+		this.items.set(SLOT_MATERIAL, ItemStack.EMPTY);
 		setChanged();
 		return result;
 	}
@@ -117,21 +132,22 @@ public class RefineBlockEntity extends BlockEntity {
 	// ---- tick do servidor ----
 
 	public static void serverTick(Level level, BlockPos pos, BlockState state, RefineBlockEntity be) {
+		ItemStack repairItem = be.items.get(SLOT_REPAIR);
+		ItemStack materialItem = be.items.get(SLOT_MATERIAL);
+
 		boolean wasRefining = be.refining;
-		boolean shouldRefine = !be.repairItem.isEmpty()
-				&& be.repairItem.isDamaged()
-				&& !be.materialItem.isEmpty();
+		boolean shouldRefine = !repairItem.isEmpty() && repairItem.isDamaged() && !materialItem.isEmpty();
 
 		be.refining = shouldRefine;
 
 		if (shouldRefine && level.getGameTime() % TICKS_PER_REPAIR_STEP == 0) {
-			int newDamage = Math.max(0, be.repairItem.getDamageValue() - 1);
-			be.repairItem.setDamageValue(newDamage);
+			int newDamage = Math.max(0, repairItem.getDamageValue() - 1);
+			repairItem.setDamageValue(newDamage);
 			be.durabilitySinceLastMaterial++;
 
 			if (be.durabilitySinceLastMaterial >= DURABILITY_PER_MATERIAL) {
 				be.durabilitySinceLastMaterial = 0;
-				be.materialItem.shrink(1);
+				materialItem.shrink(1);
 			}
 			be.setChanged();
 			be.syncToClient();
@@ -141,40 +157,36 @@ public class RefineBlockEntity extends BlockEntity {
 	}
 
 	private void syncToClient() {
-		if (this.level != null && !this.level.isClientSide) {
+		if (this.level != null && !this.level.isClientSide()) {
 			this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
 		}
 	}
 
-	// ---- salvar / carregar ----
+	// ---- salvar / carregar (API nova: ValueOutput / ValueInput, sem HolderLookup.Provider) ----
 
 	@Override
-	protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
-		super.saveAdditional(tag, registries);
-		if (!this.repairItem.isEmpty()) {
-			tag.put("RepairItem", this.repairItem.save(registries, new CompoundTag()));
-		}
-		if (!this.materialItem.isEmpty()) {
-			tag.put("MaterialItem", this.materialItem.save(registries, new CompoundTag()));
-		}
-		tag.putInt("DurabilitySinceLastMaterial", this.durabilitySinceLastMaterial);
-		tag.putBoolean("Refining", this.refining);
+	protected void saveAdditional(ValueOutput output) {
+		super.saveAdditional(output);
+		ContainerHelper.saveAllItems(output, this.items);
+		output.putInt("DurabilitySinceLastMaterial", this.durabilitySinceLastMaterial);
+		output.putBoolean("Refining", this.refining);
 	}
 
 	@Override
-	protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
-		super.loadAdditional(tag, registries);
-		this.repairItem = ItemStack.parseOptional(registries, tag.getCompoundOrEmpty("RepairItem"));
-		this.materialItem = ItemStack.parseOptional(registries, tag.getCompoundOrEmpty("MaterialItem"));
-		this.durabilitySinceLastMaterial = tag.getIntOr("DurabilitySinceLastMaterial", 0);
-		this.refining = tag.getBooleanOr("Refining", false);
+	protected void loadAdditional(ValueInput input) {
+		super.loadAdditional(input);
+		this.items.clear();
+		ContainerHelper.loadAllItems(input, this.items);
+		while (this.items.size() < 2) {
+			this.items.add(ItemStack.EMPTY);
+		}
+		this.durabilitySinceLastMaterial = input.getIntOr("DurabilitySinceLastMaterial", 0);
+		this.refining = input.getBooleanOr("Refining", false);
 	}
 
 	@Override
 	public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
-		CompoundTag tag = new CompoundTag();
-		this.saveAdditional(tag, registries);
-		return tag;
+		return this.saveWithoutMetadata(registries);
 	}
 
 	@Nullable
