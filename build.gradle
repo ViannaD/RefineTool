@@ -47,3 +47,19 @@ jar {
         rename { "${it}_${project.base.archivesName.get()}" }
     }
 }
+
+// ---------------------------------------------------------------------
+// Tarefa de DIAGNOSTICO temporaria: imprime os metodos publicos reais de
+// uma classe do jogo, usando o javap (ferramenta que ja vem no JDK) contra
+// o classpath resolvido pelo Loom. Util quando uma API mudou de assinatura
+// numa versao muito nova e precisamos ver o que realmente existe.
+// Uso: ./gradlew inspectClass -PclassName=net.minecraft.client.renderer.rendertype.RenderType
+// Pode apagar esse bloco inteiro depois que nao precisar mais dele.
+// ---------------------------------------------------------------------
+tasks.register('inspectClass', Exec) {
+    def javapExe = "${System.getProperty('java.home')}/bin/javap"
+    def cp = sourceSets.main.compileClasspath.asPath
+    def target = project.findProperty('className') ?: 'net.minecraft.client.renderer.rendertype.RenderType'
+    commandLine javapExe, '-cp', cp, '-public', target
+}
+
